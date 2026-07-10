@@ -3,7 +3,54 @@ import sys
 import unittest
 
 from bloodyAD import asciitree, utils
+from bloodyAD.cli_modules.add import _u2u_with_session_enctype
 from bloodyAD.main import amain
+from kerbad.protocol.asn1_structs import TGS_REQ
+
+
+class U2USessionEnctypeTests(unittest.TestCase):
+    def test_replaces_legacy_rc4_request_with_session_enctype(self):
+        request = TGS_REQ(
+            {
+                "pvno": 5,
+                "msg-type": 12,
+                "req-body": {
+                    "kdc-options": set(),
+                    "realm": "ODYSSEY.HTB",
+                    "nonce": 1,
+                    "etype": [23],
+                },
+            }
+        )
+
+        class Socket:
+            def __init__(self):
+                self.request = None
+
+            def sendrecv(self, message):
+                self.request = TGS_REQ.load(message)
+                return "response"
+
+        class SessionKey:
+            enctype = 18
+
+        class Client:
+            def __init__(self):
+                self.ksoc = Socket()
+                self.kerberos_session_key = SessionKey()
+
+            def U2U(self):
+                return self.ksoc.sendrecv(request.dump())
+
+            def with_clock_skew(self, function):
+                return function()
+
+        client = Client()
+        original_sendrecv = client.ksoc.sendrecv
+
+        self.assertEqual(_u2u_with_session_enctype(client), "response")
+        self.assertEqual(client.ksoc.request["req-body"]["etype"].native, [18])
+        self.assertEqual(client.ksoc.sendrecv, original_sendrecv)
 
 
 class LazyAdSchemaTests(unittest.IsolatedAsyncioTestCase):

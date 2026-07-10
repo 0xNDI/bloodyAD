@@ -1,8 +1,24 @@
 import unittest
-from bloodyAD.formatters import formatters
+from bloodyAD.formatters import adschema, formatters
 
 
 class FormatterTests(unittest.TestCase):
+    def test_windows_2025_schema_guids(self):
+        expected_attributes = {
+            "3752e002-43be-48c8-b3ca-2cb2fffbc8a1": "ms-DS-Superseded-Managed-Account-Link",
+            "a0945b2b-57a2-43bd-b327-4d112a4e8bd1": "ms-DS-Managed-Account-Preceded-By-Link",
+            "a4693096-a4c3-4ecd-b8cb-73cd6398b7a2": "ms-DS-Superseded-Service-Account-State",
+        }
+
+        for guid, name in expected_attributes.items():
+            with self.subTest(guid=guid):
+                self.assertEqual(adschema.SCHEMA_ATTRIBUTES[guid], name)
+
+        self.assertEqual(
+            adschema.SCHEMA_CLASSES["0feb936f-47b3-49f2-9386-1dedc2c23765"],
+            "ms-DS-Delegated-Managed-Service-Account",
+        )
+
     def test_getFormatters(self):
         """Test that getFormatters returns expected attribute mappings"""
         formatter_map = formatters.getFormatters()

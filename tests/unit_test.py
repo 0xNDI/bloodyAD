@@ -1,8 +1,58 @@
-import unittest
-import sys
-from bloodyAD import asciitree
-from bloodyAD.main import amain
 import asyncio
+import sys
+import unittest
+
+from bloodyAD import asciitree, utils
+from bloodyAD.main import amain
+
+
+class LazyAdSchemaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resolves_identifiers_added_after_previous_batch(self):
+        schema = utils.LazyAdSchema()
+        schema.guids = set()
+        schema.sids = set()
+        schema.DNs = set()
+        schema.guid_dict = {}
+        schema.sid_dict = {}
+        schema.dn_dict = {}
+        schema.isResolved = False
+
+        async def resolve_pending():
+            for guid in schema.guids:
+                schema.guid_dict[guid] = f"resolved-{guid}"
+            schema.isResolved = True
+            schema.guids = set()
+
+        schema._resolveAll = resolve_pending
+
+        schema.addguid("first-guid")
+        self.assertEqual(await schema.getguid("first-guid"), "resolved-first-guid")
+        self.assertTrue(schema.isResolved)
+
+        schema.addguid("second-guid")
+        self.assertFalse(schema.isResolved)
+        self.assertEqual(await schema.getguid("second-guid"), "resolved-second-guid")
+
+    def test_new_unknown_identifier_reopens_resolution(self):
+        schema = utils.LazyAdSchema()
+        schema.guids = set()
+        schema.sids = set()
+        schema.DNs = set()
+        schema.guid_dict = {}
+        schema.sid_dict = {}
+        schema.dn_dict = {}
+
+        schema.isResolved = True
+        schema.addguid("unknown-guid")
+        self.assertFalse(schema.isResolved)
+
+        schema.isResolved = True
+        schema.addsid("S-1-5-21-1")
+        self.assertFalse(schema.isResolved)
+
+        schema.isResolved = True
+        schema.adddn("CN=Unknown,DC=example,DC=com")
+        self.assertFalse(schema.isResolved)
 
 
 class UnitTests(unittest.TestCase):

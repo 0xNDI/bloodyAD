@@ -398,16 +398,19 @@ class LazyAdSchema:
         # Should not add in set to resolve after if it is already resolved
         if guid not in self.guid_dict:
             self.guids.add(guid)
+            self.isResolved = False
 
     def addsid(self, sid):
         # Should not add in set to resolve after if it is already resolved
         if sid not in self.sid_dict:
             self.sids.add(sid)
+            self.isResolved = False
 
     def adddn(self, dn):
         dn_upper = dn.upper()
         if dn_upper not in self.dn_dict:
             self.DNs.add(dn_upper)
+            self.isResolved = False
 
     # Return name mapped to the guid
     async def getguid(self, guid):

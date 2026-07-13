@@ -4,6 +4,7 @@ import unittest
 
 from bloodyAD import asciitree, utils
 from bloodyAD.cli_modules.add import _u2u_with_session_enctype
+from bloodyAD.exceptions import NoResultError
 from bloodyAD.main import amain
 from kerbad.protocol.asn1_structs import TGS_REQ
 
@@ -54,6 +55,52 @@ class U2USessionEnctypeTests(unittest.TestCase):
 
 
 class LazyAdSchemaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_caches_unresolved_sid_when_ldap_returns_no_results(self):
+        class Ldap:
+            def __init__(self):
+                self.search_count = 0
+
+            def bloodysearch(self, base, ldap_filter, **kwargs):
+                self.search_count += 1
+
+                async def no_results():
+                    raise NoResultError(base, ldap_filter)
+                    yield
+
+                return no_results()
+
+        class Conf:
+            transitive = False
+
+        class Conn:
+            conf = Conf()
+
+            def __init__(self):
+                self.ldap = Ldap()
+
+            async def getLdap(self):
+                return self.ldap
+
+        schema = utils.LazyAdSchema()
+        schema.guids = set()
+        schema.sids = set()
+        schema.DNs = set()
+        schema.guid_dict = {}
+        schema.sid_dict = {}
+        schema.dn_dict = {}
+        schema.isResolved = False
+        schema.conn = Conn()
+
+        unresolved_sid = "S-1-5-21-1-2-3-512"
+        schema.addsid(unresolved_sid)
+        self.assertEqual(await schema.getsid(unresolved_sid), unresolved_sid)
+        self.assertEqual(schema.conn.ldap.search_count, 1)
+
+        schema.addsid(unresolved_sid)
+        self.assertTrue(schema.isResolved)
+        self.assertEqual(await schema.getsid(unresolved_sid), unresolved_sid)
+        self.assertEqual(schema.conn.ldap.search_count, 1)
+
     async def test_resolves_identifiers_added_after_previous_batch(self):
         schema = utils.LazyAdSchema()
         schema.guids = set()

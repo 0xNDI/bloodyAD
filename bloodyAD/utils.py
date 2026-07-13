@@ -1,4 +1,4 @@
-from bloodyAD.exceptions import LOG
+from bloodyAD.exceptions import LOG, NoResultError
 from bloodyAD.formatters import (
     ldaptypes,
     accesscontrol,
@@ -303,7 +303,13 @@ class LazyAdSchema:
         if self.isResolved:
             return
 
-        async def domResolve(conn, sid_iter, dn_iter):
+        # Work on a snapshot so identifiers added while LDAP requests are in
+        # flight remain queued for the next batch.
+        pending_guids = set(self.guids)
+        pending_sids = set(self.sids)
+        pending_dns = set(self.DNs)
+
+        async def domResolve(conn, sid_iter, dn_iter=()):
             # WARNING: only 512 filters max per request
             filters = []
             buffer_filter = ""
@@ -324,7 +330,7 @@ class LazyAdSchema:
                 filter_nb += 1
 
             if conn == self.conn:
-                for guid in self.guids:
+                for guid in pending_guids:
                     if filter_nb > 511:
                         filters.append(buffer_filter)
                         buffer_filter = ""
@@ -357,42 +363,56 @@ class LazyAdSchema:
                     search_scope=Scope.SUBTREE,
                     controls=phantomRoot()+showRecoverable(),
                 )
-                async for entry in entries:
-                    if entry.get("objectSid"):
-                        self.sid_dict[entry["objectSid"]] = (
-                            entry["sAMAccountName"]
-                            if entry.get("sAMAccountName")
-                            else entry["name"]
-                        )
-                        self.dn_dict[entry["distinguishedName"].upper()] = entry["objectSid"]
-                    else:
-                        if entry.get("rightsGuid"):
-                            key = entry["rightsGuid"]
-                        elif entry.get("schemaIDGUID"):
-                            key = entry["schemaIDGUID"]
+                try:
+                    async for entry in entries:
+                        if entry.get("objectSid"):
+                            self.sid_dict[entry["objectSid"]] = (
+                                entry["sAMAccountName"]
+                                if entry.get("sAMAccountName")
+                                else entry["name"]
+                            )
+                            self.dn_dict[entry["distinguishedName"].upper()] = entry["objectSid"]
                         else:
-                            LOG.warning(f"No guid/sid returned for {entry}")
-                            continue
-                        self.guid_dict[key] = entry["name"]
+                            if entry.get("rightsGuid"):
+                                key = entry["rightsGuid"]
+                            elif entry.get("schemaIDGUID"):
+                                key = entry["schemaIDGUID"]
+                            else:
+                                LOG.warning(f"No guid/sid returned for {entry}")
+                                continue
+                            self.guid_dict[key] = entry["name"]
+                except NoResultError:
+                    # A missing schema object or deleted/foreign principal is
+                    # a valid negative lookup. Keep its raw identifier below.
+                    pass
 
         sidmap = collections.defaultdict(list)
         if getattr(self.conn.conf, "transitive", None):
             ldap = await self.conn.getLdap()
             trustmap = await ldap.getTrustMap()
-            for sid in self.sids:
+            for sid in pending_sids:
                 for dom_params in trustmap.values():
                     if dom_params.get("conn") and sid.startswith(dom_params["domsid"]):
                         sidmap[dom_params["conn"]].append(sid)
             for conn, sidlist in sidmap.items():
                 await domResolve(conn, sidlist)
         else:
-            await domResolve(self.conn, self.sids, self.DNs)
+            await domResolve(self.conn, pending_sids, pending_dns)
 
-        # Cleanup resolved ids from queues
-        self.isResolved = True
-        self.guids = set()
-        self.sids = set()
-        self.DNs = set()
+        # Cache negative lookups too. Otherwise an unresolved identifier in a
+        # later security descriptor reopens an identical LDAP request, and an
+        # all-negative batch raises NoResultError.
+        for guid in pending_guids:
+            self.guid_dict.setdefault(guid, guid)
+        for sid in pending_sids:
+            self.sid_dict.setdefault(sid, sid)
+        for dn in pending_dns:
+            self.dn_dict.setdefault(dn, "")
+
+        self.guids.difference_update(pending_guids)
+        self.sids.difference_update(pending_sids)
+        self.DNs.difference_update(pending_dns)
+        self.isResolved = not (self.guids or self.sids or self.DNs)
 
     def addguid(self, guid):
         # Should not add in set to resolve after if it is already resolved

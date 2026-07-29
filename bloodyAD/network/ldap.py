@@ -126,6 +126,12 @@ class Ldap(MSLDAPClient):
                         auth += cnf.format
                     else:
                         auth += "password"
+                        # Prefer AES for password-based Kerberos.  Some modern
+                        # KDCs include RC4 in ETYPE-INFO2 for compatibility but
+                        # reject RC4 pre-authentication.  kerbad otherwise
+                        # retries the rejected RC4 enctype because it is first
+                        # in its client preference list.
+                        params += "&etype=18&etype=17&etype=23"
                     key = encoded_cnf["password"]
                 else:
                     if os.name == "nt":
@@ -768,5 +774,4 @@ class Ldap(MSLDAPClient):
             if newconn != conn and newconn._ldap:
                 await newconn._ldap.close()
         return search_result
-
 

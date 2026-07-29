@@ -1,11 +1,14 @@
 import asyncio
 import sys
 import unittest
+from unittest.mock import patch
 
 from bloodyAD import asciitree, utils
 from bloodyAD.cli_modules.add import _u2u_with_session_enctype
 from bloodyAD.exceptions import NoResultError
 from bloodyAD.main import amain
+from bloodyAD.network.config import Config, ConnectionHandler
+from bloodyAD.network.ldap import Ldap
 from kerbad.protocol.asn1_structs import TGS_REQ
 
 
@@ -52,6 +55,28 @@ class U2USessionEnctypeTests(unittest.TestCase):
         self.assertEqual(_u2u_with_session_enctype(client), "response")
         self.assertEqual(client.ksoc.request["req-body"]["etype"].native, [18])
         self.assertEqual(client.ksoc.sendrecv, original_sendrecv)
+
+
+class KerberosPasswordEnctypeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prefers_aes_before_rc4(self):
+        config = Config(
+            host="dc.example.test",
+            domain="example.test",
+            username="alice",
+            password="password",
+            krb_args=[],
+            dcip="192.0.2.1",
+        )
+
+        with patch(
+            "bloodyAD.network.ldap.LDAPConnectionFactory.from_url",
+            side_effect=RuntimeError("URL captured"),
+        ) as from_url:
+            with self.assertRaisesRegex(RuntimeError, "URL captured"):
+                await Ldap.create(ConnectionHandler(config=config))
+
+        connection_url = from_url.call_args.args[0]
+        self.assertIn("&etype=18&etype=17&etype=23", connection_url)
 
 
 class LazyAdSchemaTests(unittest.IsolatedAsyncioTestCase):

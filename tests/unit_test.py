@@ -4,12 +4,35 @@ import unittest
 from unittest.mock import patch
 
 from bloodyAD import asciitree, utils
-from bloodyAD.cli_modules.add import _u2u_with_session_enctype
+from bloodyAD.cli_modules.add import _dmsa_kerberos_query, _u2u_with_session_enctype
 from bloodyAD.exceptions import NoResultError
 from bloodyAD.main import amain
 from bloodyAD.network.config import Config, ConnectionHandler
 from bloodyAD.network.ldap import Ldap
 from kerbad.protocol.asn1_structs import TGS_REQ
+from urllib import parse
+
+
+class DMSAKerberosQueryTests(unittest.TestCase):
+    def test_password_auth_prefers_aes_and_removes_ldap_parameters(self):
+        parsed = parse.urlparse(
+            "kerberos+pw://example.test\\alice:password@192.0.2.1/"
+            "?serverip=192.0.2.1&dc=192.0.2.1&timeout=10"
+        )
+
+        query = parse.parse_qs(_dmsa_kerberos_query(parsed))
+
+        self.assertEqual(query, {"timeout": ["10"], "etype": ["18"]})
+
+    def test_existing_enctype_order_is_preserved(self):
+        parsed = parse.urlparse(
+            "kerberos+password://example.test\\alice:password@192.0.2.1/"
+            "?etype=18&etype=17&etype=23"
+        )
+
+        query = parse.parse_qs(_dmsa_kerberos_query(parsed))
+
+        self.assertEqual(query["etype"], ["18", "17", "23"])
 
 
 class U2USessionEnctypeTests(unittest.TestCase):

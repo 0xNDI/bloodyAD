@@ -584,9 +584,15 @@ async def rbcd(conn: ConnectionHandler, target: str, service: str):
     )
 
     LOG.info(f"{service} can now impersonate users on {target} via S4U2Proxy")
-    splitted_url = ldap.co_url.split("-",1)    
-    url = "kerberos+" + splitted_url[1]
-    LOG.info(f"e.g. badS4U2proxy '{url}' 'HOST/{target}@{conn.conf.domain}' 'Administrator@{conn.conf.domain}'")
+    co_url = ldap.co_url
+    if "+kerberos-" in co_url:
+        krb_url = "kerberos+" + co_url.split("+kerberos-", 1)[1]
+    else:
+        krb_url = "kerberos://" + conn.conf.dcip
+    LOG.info(
+        f"e.g. badS4U2proxy '{krb_url}' 'HOST/{target}@{conn.conf.domain}'"
+        f" 'Administrator@{conn.conf.domain}'"
+    )
 
 
 async def shadowCredentials(conn: ConnectionHandler, target: str, path: str = "CurrentPath", stealth: bool = False):

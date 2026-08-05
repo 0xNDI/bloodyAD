@@ -27,3 +27,42 @@
 #                 f.write(ca.public_bytes(Encoding.PEM))
 
 # UniSSL.pfx_to_pem = pfx_to_pem
+
+
+# --- Relax OpenSSL security level for weak-digest client certificates ---
+import ssl as _ssl
+
+try:
+    from asysocks.unicomm.common.unissl import UniSSL as _UniSSL
+except ImportError:  # pragma: no cover - asysocks is a hard dep of bloodyAD
+    _UniSSL = None
+
+
+if _UniSSL is not None:
+    def _bloodyad_get_ssl_context(self, protocol=_ssl.PROTOCOL_TLS_CLIENT):
+        self._UniSSL__startup()
+        try:
+            ctx = _ssl.SSLContext(protocol)
+            try:
+                ctx.set_ciphers("DEFAULT:@SECLEVEL=0")  # allow SHA1/MD5 CA digests
+            except _ssl.SSLError:
+                pass  # some protocols don't support cipher strings
+            if self._UniSSL__certfilename is not None:
+                ctx.load_cert_chain(
+                    certfile=self._UniSSL__certfilename,
+                    keyfile=self._UniSSL__keyfilename,
+                    password=self.password,
+                )
+            if self.verify is False:
+                ctx.check_hostname = False
+                ctx.verify_mode = _ssl.CERT_NONE
+            else:
+                if self.cacert is not None:
+                    ctx.load_verify_locations(cafile=self._UniSSL__cacertfilename)
+                else:
+                    ctx.load_default_certs(purpose=_ssl.Purpose.SERVER_AUTH)
+            return ctx
+        finally:
+            self._UniSSL__cleanup()
+
+    _UniSSL.get_ssl_context = _bloodyad_get_ssl_context

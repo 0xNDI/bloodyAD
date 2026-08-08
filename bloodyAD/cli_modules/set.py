@@ -12,6 +12,7 @@ from badldap.protocol.typeconversion import (
 )
 from datetime import datetime, timezone, timedelta
 import unicodedata, base64
+import re
 
 async def object(conn, target: str, attribute: str, v: list = [], raw: bool = False, b64: bool = False, bak: bool = False):
     """
@@ -335,6 +336,14 @@ async def password(conn, target: str, newpass: str, oldpass: str = None, stealth
     return True
 
 
+_DELETED_OBJECT_DN = re.compile(
+    r"^(?P<rdn>(?:[^,\\]|\\.)+)\\0ADEL:"
+    r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12},"
+    r"(?i:CN=Deleted Objects),DC=.+$",
+    re.IGNORECASE,
+)
+
+
 async def restore(conn, target: str, newName: str = None, newParent: str = None):
     """
     Restore a deleted object
@@ -343,46 +352,60 @@ async def restore(conn, target: str, newName: str = None, newParent: str = None)
     :param newName: new name for the restored object (update also sAMAccountName, UPN, SPN...), if not provided will use the last known RDN
     :param newParent: new parent for the restored object, if not provided will use the last known parent
     """
-    if target.lower().startswith("cn=") or target.lower().startswith("dc="):
-        # double encode needed because of \0A in deleted objects DNs
-        ldap_filter = f"(distinguishedName={utils.double_encode_controls(target)})"
-    elif target.lower().startswith("s-1-"):
-        ldap_filter = f"(objectSid={target})"
-    elif target.startswith("{"):
-        ldap_filter = f"(name={target})"
-    else:
-        ldap_filter = f"(sAMAccountName={target})"
-    ldap_filter = f"(&{ldap_filter}(isDeleted=TRUE))"
     ldap = await conn.getLdap()
-    entry = None
-    async for e in ldap.bloodysearch(
-        "CN=Deleted Objects,"+ldap.domainNC, ldap_filter, search_scope=Scope.SUBTREE, attr=["msDS-LastKnownRDN","lastKnownParent", "sAMAccountName", "servicePrincipalName", "userPrincipalName", "name", "dNSHostName", "displayName"], controls=showRecoverable()
-    ):
-        entry = e
-        break# LDAP_SERVER_SHOW_DELETED_OID
-    if not newParent and not entry.get("lastKnownParent"):
-        raise ValueError("lastKnownParent is missing and no --newParent provided, cannot safely restore")
-    old_name = entry['name'].splitlines()[0]
-    new_dn = f"CN={newName if newName else entry.get('msDS-LastKnownRDN',old_name)},{newParent if newParent else entry['lastKnownParent']}"
-    attributes = {"distinguishedName": [(Change.REPLACE.value, new_dn)],"isDeleted": [(Change.DELETE.value, [])]}
-    if newName:
-        # Name will be automatically replaced by new RDN,
-        # If we force the change we will have error ERROR_DS_CANT_ON_RDN
-        #attributes["name"] = [(Change.REPLACE.value, newName)]
-        if entry.get("displayName"):
-            attributes["displayName"] = [(Change.REPLACE.value, entry["displayName"].replace(entry["name"], newName))]
-        if entry.get("sAMAccountName"):
-            attributes["sAMAccountName"] = [(Change.REPLACE.value, newName+'$' if entry["sAMAccountName"][-1] == "$" else newName)]
-        if entry.get("servicePrincipalName"):
-            attributes["servicePrincipalName"] = [(Change.REPLACE.value, [v.replace(entry["name"],newName) for v in entry["servicePrincipalName"]])]
-        if entry.get("userPrincipalName"):
-            attributes["userPrincipalName"] = [(Change.REPLACE.value, newName + '@' + entry["userPrincipalName"].split('@')[-1])]
-        if entry.get("dNSHostName"):
-            attributes["dNSHostName"] = [(Change.REPLACE.value, newName + '.' + entry["dNSHostName"].split('.',1)[-1])]
+    deleted_dn_match = _DELETED_OBJECT_DN.fullmatch(target)
+
+    if deleted_dn_match and newParent:
+        # An exact tombstone DN can be modified directly even when the caller cannot
+        # list CN=Deleted Objects. Both restore changes must be in one request.
+        restored_rdn = f"CN={newName}" if newName else deleted_dn_match["rdn"]
+        new_dn = f"{restored_rdn},{newParent}"
+        target_dn = target
+        attributes = {
+            "distinguishedName": [(Change.REPLACE.value, new_dn)],
+            "isDeleted": [(Change.DELETE.value, [])],
+        }
+    else:
+        if target.lower().startswith("cn=") or target.lower().startswith("dc="):
+            # double encode needed because of \0A in deleted objects DNs
+            ldap_filter = f"(distinguishedName={utils.double_encode_controls(target)})"
+        elif target.lower().startswith("s-1-"):
+            ldap_filter = f"(objectSid={target})"
+        elif target.startswith("{"):
+            ldap_filter = f"(name={target})"
+        else:
+            ldap_filter = f"(sAMAccountName={target})"
+        ldap_filter = f"(&{ldap_filter}(isDeleted=TRUE))"
+        entry = None
+        async for e in ldap.bloodysearch(
+            "CN=Deleted Objects,"+ldap.domainNC, ldap_filter, search_scope=Scope.SUBTREE, attr=["msDS-LastKnownRDN","lastKnownParent", "sAMAccountName", "servicePrincipalName", "userPrincipalName", "name", "dNSHostName", "displayName"], controls=showRecoverable()
+        ):
+            entry = e
+            break# LDAP_SERVER_SHOW_DELETED_OID
+        if not newParent and not entry.get("lastKnownParent"):
+            raise ValueError("lastKnownParent is missing and no --newParent provided, cannot safely restore")
+        old_name = entry['name'].splitlines()[0]
+        new_dn = f"CN={newName if newName else entry.get('msDS-LastKnownRDN',old_name)},{newParent if newParent else entry['lastKnownParent']}"
+        target_dn = entry["distinguishedName"]
+        attributes = {"distinguishedName": [(Change.REPLACE.value, new_dn)],"isDeleted": [(Change.DELETE.value, [])]}
+        if newName:
+            # Name will be automatically replaced by new RDN,
+            # If we force the change we will have error ERROR_DS_CANT_ON_RDN
+            #attributes["name"] = [(Change.REPLACE.value, newName)]
+            if entry.get("displayName"):
+                attributes["displayName"] = [(Change.REPLACE.value, entry["displayName"].replace(entry["name"], newName))]
+            if entry.get("sAMAccountName"):
+                attributes["sAMAccountName"] = [(Change.REPLACE.value, newName+'$' if entry["sAMAccountName"][-1] == "$" else newName)]
+            if entry.get("servicePrincipalName"):
+                attributes["servicePrincipalName"] = [(Change.REPLACE.value, [v.replace(entry["name"],newName) for v in entry["servicePrincipalName"]])]
+            if entry.get("userPrincipalName"):
+                attributes["userPrincipalName"] = [(Change.REPLACE.value, newName + '@' + entry["userPrincipalName"].split('@')[-1])]
+            if entry.get("dNSHostName"):
+                attributes["dNSHostName"] = [(Change.REPLACE.value, newName + '.' + entry["dNSHostName"].split('.',1)[-1])]
 
     try:
         await ldap.bloodymodify(
-            entry["distinguishedName"], attributes, controls=[("1.2.840.113556.1.4.417", True, None)], is_restore=True
+            target_dn, attributes, controls=[("1.2.840.113556.1.4.417", True, None)], is_restore=True
         )
     except badldap.commons.exceptions.LDAPModifyException as e:
         if "userPrincipalName" in str(e.diagnostic_message) and e.resultcode == 19: # 19 is constraintViolation

@@ -24,7 +24,7 @@ install-dev: install
 	$(PYTHON) -m pip install -r requirements-dev.txt
 
 test-unit:
-	$(PYTHON) -m unittest tests.test_formatters tests.test_msldap_module tests.unit_test -v
+	$(PYTHON) -m unittest tests.test_formatters tests.test_msldap_module tests.test_restore tests.unit_test -v
 
 test-functional:
 	@test -f tests/secrets.json || ( \

